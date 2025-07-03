@@ -1,0 +1,57 @@
+from flask import Flask, request, jsonify
+import face_recognition
+import requests
+from io import BytesIO
+
+app = Flask(__name__)
+
+# Replace with your actual Dataverse API endpoint and token
+DATAVERSE_API_URL = "https://your-org.api.crm.dynamics.com/api/data/v9.2/your_table_name"
+BEARER_TOKEN = "YOUR_ACCESS_TOKEN"
+
+def get_id_image_from_dataverse(user_id):
+    headers = {
+        "Authorization": f"Bearer {BEARER_TOKEN}",
+        "Accept": "application/json"
+    }
+    response = requests.get(f"{DATAVERSE_API_URL}({user_id})?$select=id_image_column", headers=headers)
+    if response.status_code != 200:
+        return None
+
+    image_url = response.json().get("id_image_column@odata.mediaReadLink")
+    image_response = requests.get(image_url, headers=headers)
+    return image_response.content if image_response.status_code == 200 else None
+
+@app.route('/verify_identity', methods=['POST'])
+def verify_identity():
+    user_id = request.form.get('user_id')
+    selfie_file = request.files.get('selfie')
+
+    if not user_id or not selfie_file:
+        return jsonify({'error': 'Missing user_id or selfie'}), 400
+
+    id_image_bytes = get_id_image_from_dataverse(user_id)
+    if not id_image_bytes:
+        return jsonify({'error': 'Could not retrieve ID image from Dataverse'}), 404
+
+    # Load images
+    selfie_image = face_recognition.load_image_file(selfie_file)
+    id_image = face_recognition.load_image_file(BytesIO(id_image_bytes))
+
+    # Encode faces
+    selfie_encoding = face_recognition.face_encodings(selfie_image)
+    id_encoding = face_recognition.face_encodings(id_image)
+
+    if not selfie_encoding or not id_encoding:
+        return jsonify({'error': 'Face not detected in one or both images'}), 400
+
+    match = face_recognition.compare_faces([id_encoding[0]], selfie_encoding[0])[0]
+    distance = face_recognition.face_distance([id_encoding[0]], selfie_encoding[0])[0]
+
+    return jsonify({
+        'match': match,
+        'distance': float(distance)
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True)
